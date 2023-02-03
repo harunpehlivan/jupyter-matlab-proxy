@@ -31,7 +31,7 @@ def fetch_matlab_proxy_status(url, headers):
     Raises:
         HTTPError: Occurs when connection to matlab-proxy cannot be established.
     """
-    resp = requests.get(url + "/get_status", headers=headers, verify=False)
+    resp = requests.get(f"{url}/get_status", headers=headers, verify=False)
     if resp.status_code == requests.codes.OK:
         data = resp.json()
         is_matlab_licensed = data["licensing"] != None
@@ -130,39 +130,39 @@ def _send_feval_request_to_matlab(url, headers, fname, nargout, *args):
         json=req_body,
         verify=False,
     )
-    if resp.status_code == requests.codes.OK:
-        response_data = resp.json()
-        try:
-            feval_response = response_data["messages"]["FEvalResponse"][1]
-        except KeyError:
-            # In certain cases when the HTTPResponse is received, it does not
-            # contain the expected data. In these cases most likely MATLAB has
-            # gone away. Hence we raise the HTTPError to indicate MATLAB is not
-            # available.
-            raise requests.HTTPError()
+    if resp.status_code != requests.codes.OK:
+        raise resp.raise_for_status()
+    response_data = resp.json()
+    try:
+        feval_response = response_data["messages"]["FEvalResponse"][1]
+    except KeyError:
+        # In certain cases when the HTTPResponse is received, it does not
+        # contain the expected data. In these cases most likely MATLAB has
+        # gone away. Hence we raise the HTTPError to indicate MATLAB is not
+        # available.
+        raise requests.HTTPError()
 
-        # If the feval request succeeded and outputs are present, return the result.
-        if not feval_response["isError"]:
-            if nargout != 0 and feval_response["results"]:
-                return feval_response["results"][0]
+    # If the feval request succeeded and outputs are present, return the result.
+    if not feval_response["isError"]:
+        if nargout != 0 and feval_response["results"]:
+            return feval_response["results"][0]
 
-            # Return empty list if there are no outputs in the repsonse
-            return []
+        # Return empty list if there are no outputs in the repsonse
+        return []
 
         # Handle error case. This happens when "Interrupt Kernel" is issued.
-        if feval_response["messageFaults"][0]["message"] == "":
-            error_message = "Failed to execute. Operation may have interrupted by user."
-        else:
-            error_message = "Failed to execute. Please try again."
-        raise Exception(error_message)
-    else:
-        raise resp.raise_for_status()
+    error_message = (
+        "Failed to execute. Operation may have interrupted by user."
+        if feval_response["messageFaults"][0]["message"] == ""
+        else "Failed to execute. Please try again."
+    )
+    raise Exception(error_message)
 
 
 def _send_eval_request_to_matlab(url, headers, mcode):
     # Add the MATLAB code shipped with kernel to the Path
     path = str(pathlib.Path(__file__).parent / "matlab")
-    mcode = 'addpath("' + path + '")' + ";" + mcode
+    mcode = f'addpath("{path}");{mcode}'
 
     req_body = get_data_to_eval_mcode(mcode)
     resp = requests.post(
@@ -171,55 +171,49 @@ def _send_eval_request_to_matlab(url, headers, mcode):
         json=req_body,
         verify=False,
     )
-    if resp.status_code == requests.codes.OK:
-        response_data = resp.json()
-        try:
-            eval_response = response_data["messages"]["EvalResponse"][0]
-        except KeyError:
-            # In certain cases when the HTTPResponse is received, it does not
-            # contain the expected data. In these cases most likely MATLAB has
-            # gone away. Hence we raise the HTTPError to indicate MATLAB is not
-            # available.
-            raise requests.HTTPError()
+    if resp.status_code != requests.codes.OK:
+        raise resp.raise_for_status()
+    response_data = resp.json()
+    try:
+        eval_response = response_data["messages"]["EvalResponse"][0]
+    except KeyError:
+        # In certain cases when the HTTPResponse is received, it does not
+        # contain the expected data. In these cases most likely MATLAB has
+        # gone away. Hence we raise the HTTPError to indicate MATLAB is not
+        # available.
+        raise requests.HTTPError()
 
-        # If the eval request succeeded, return the json decoded result.
-        if not eval_response["isError"]:
-            result_filepath = eval_response["responseStr"].strip()
+    # If the eval request succeeded, return the json decoded result.
+    if not eval_response["isError"]:
+        result_filepath = eval_response["responseStr"].strip()
 
-            # If the filepath in the response is not empty, read the result from
-            # file and delete the file.
-            if result_filepath != "":
-                with open(result_filepath, "r") as f:
-                    result = f.read().strip()
+        # If the filepath in the response is not empty, read the result from
+        # file and delete the file.
+        if result_filepath != "":
+            with open(result_filepath, "r") as f:
+                result = f.read().strip()
 
-                try:
-                    import os
+            try:
+                import os
 
-                    os.remove(result_filepath)
-                except Exception:
-                    pass
-            else:
-                result = ""
+                os.remove(result_filepath)
+            except Exception:
+                pass
+        else:
+            result = ""
 
-            # If result is empty, populate dummy json
-            if result == "":
-                result = "[]"
-            return json.loads(result)
+        # If result is empty, populate dummy json
+        if result == "":
+            result = "[]"
+        return json.loads(result)
 
         # Handle the error cases
-        if eval_response["messageFaults"]:
-            # This happens when "Interrupt Kernel" is issued from a different
-            # kernel. There may be other cases also.
-            error_message = (
-                "Failed to execute. Operation may have been interrupted by user."
-            )
-        else:
-            # This happens when "Interrupt Kernel" is issued from the same kernel.
-            # The responseStr contains the error message
-            error_message = eval_response["responseStr"].strip()
-        raise Exception(error_message)
-    else:
-        raise resp.raise_for_status()
+    error_message = (
+        "Failed to execute. Operation may have been interrupted by user."
+        if eval_response["messageFaults"]
+        else eval_response["responseStr"].strip()
+    )
+    raise Exception(error_message)
 
 
 def _send_jupyter_request_to_matlab(url, headers, request_type, inputs):
@@ -229,11 +223,10 @@ def _send_jupyter_request_to_matlab(url, headers, request_type, inputs):
     inputs.insert(1, execution_request_type)
 
     if execution_request_type == "feval":
-        resp = _send_feval_request_to_matlab(
+        return _send_feval_request_to_matlab(
             url, headers, "processJupyterKernelRequest", 1, *inputs
         )
-    else:
-        user_mcode = inputs[2]
+    user_mcode = inputs[2]
         # Construct a string which can be evaluated in MATLAB. For example
         # "processJupyterKernelRequest('execute', 'eval', 'a = "Hello\\n''world''"')".
         # To achieve this, we need to replace the single-quotes with two single-quotes,
@@ -241,16 +234,14 @@ def _send_jupyter_request_to_matlab(url, headers, request_type, inputs):
         # code. Also, we need to escape the backslash (\) character so that the
         # string which needs to be evaluated isn't broken down by MATLAB due to
         # formatting
-        args = (
-            f"'{request_type}', '{execution_request_type}', '"
-            + json.dumps(user_mcode.replace("'", "''"))
-            + f"'"
-        )
-        if request_type == "complete":
-            cursor_pos = inputs[3]
-            args = args + "," + str(cursor_pos)
+    args = (
+        f"'{request_type}', '{execution_request_type}', '"
+        + json.dumps(user_mcode.replace("'", "''"))
+        + "'"
+    )
+    if request_type == "complete":
+        cursor_pos = inputs[3]
+        args = f"{args},{str(cursor_pos)}"
 
-        eval_mcode = f"processJupyterKernelRequest({args})"
-        resp = _send_eval_request_to_matlab(url, headers, eval_mcode)
-
-    return resp
+    eval_mcode = f"processJupyterKernelRequest({args})"
+    return _send_eval_request_to_matlab(url, headers, eval_mcode)

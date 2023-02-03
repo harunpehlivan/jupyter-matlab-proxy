@@ -61,7 +61,7 @@ def start_matlab_proxy():
 
     # Use parent process id of the kernel to filter Jupyter Server from the list
     ppid = os.getppid()
-    nb_server = dict()
+    nb_server = {}
 
     for server in nb_server_list:
         if server["pid"] == ppid:
@@ -72,29 +72,28 @@ def start_matlab_proxy():
     # incase the jupyter server is started by JupyterHub.
     jh_api_token = os.getenv("JUPYTERHUB_API_TOKEN")
 
-    if found_nb_server:
-        url = "{protocol}://localhost:{port}{base_url}matlab".format(
-            protocol="https" if nb_server["secure"] else "http",
-            port=nb_server["port"],
-            base_url=nb_server["base_url"],
-        )
-
-        token = nb_server["token"] if jh_api_token is None else jh_api_token
-        headers = {
-            "Authorization": f"token {token}",
-        }
-
-        # send request to the matlab-proxy endpoint to make sure it is available.
-        # If matlab-proxy is not started, jupyter-server starts it at this point.
-        resp = requests.get(url, headers=headers, verify=False)
-        if resp.status_code == requests.codes.OK:
-            return url, nb_server["base_url"], headers
-        else:
-            resp.raise_for_status()
-    else:
+    if not found_nb_server:
         raise MATLABConnectionError(
             "Kernel needs to be started by a Jupyter Server. Please use JupyterLab or Classic Notebook while using MATLAB Kernel for Jupyter."
         )
+    url = "{protocol}://localhost:{port}{base_url}matlab".format(
+        protocol="https" if nb_server["secure"] else "http",
+        port=nb_server["port"],
+        base_url=nb_server["base_url"],
+    )
+
+    token = nb_server["token"] if jh_api_token is None else jh_api_token
+    headers = {
+        "Authorization": f"token {token}",
+    }
+
+    # send request to the matlab-proxy endpoint to make sure it is available.
+    # If matlab-proxy is not started, jupyter-server starts it at this point.
+    resp = requests.get(url, headers=headers, verify=False)
+    if resp.status_code == requests.codes.OK:
+        return url, nb_server["base_url"], headers
+    else:
+        resp.raise_for_status()
 
 
 class MATLABKernel(ipykernel.kernelbase.Kernel):
@@ -338,7 +337,7 @@ class MATLABKernel(ipykernel.kernelbase.Kernel):
                     "type": "display_data",
                     "content": {
                         "data": {
-                            "text/html": f'<iframe src={self.server_base_url + "matlab"} width=700 height=600"></iframe>'
+                            "text/html": f'<iframe src={self.server_base_url}matlab width=700 height=600"></iframe>'
                         },
                         "metadata": {},
                     },
